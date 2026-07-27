@@ -1,23 +1,38 @@
-import { FC, useState, useEffect, useCallback, useRef } from 'react'
+import { FC, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { api } from '../api'
+import {
+  LEAD_FIELD_GROUPS,
+  LeadFieldGroup,
+  LeadFieldValues,
+  previewTemplate,
+  searchLeadFields,
+} from '../utils/leadFields'
 
 interface MessageTemplateModalProps {
   isOpen: boolean
   onClose: () => void
   selectedLeadIds: number[]
   selectedLeadsCount: number
+  /** The lead the live preview is rendered against. Usually the first one selected. */
+  previewLead?: LeadFieldValues
 }
+
+const allGroupsExpanded = () =>
+  Object.fromEntries(LEAD_FIELD_GROUPS.map((group) => [group, true])) as Record<LeadFieldGroup, boolean>
 
 export const MessageTemplateModal: FC<MessageTemplateModalProps> = ({
   isOpen,
   onClose,
   selectedLeadIds,
   selectedLeadsCount,
+  previewLead,
 }) => {
   const [template, setTemplate] = useState('')
+  const [fieldQuery, setFieldQuery] = useState('')
+  const [expandedGroups, setExpandedGroups] = useState(allGroupsExpanded)
   const [generationResult, setGenerationResult] = useState<{
     success: boolean
     generatedCount: number
@@ -40,6 +55,7 @@ export const MessageTemplateModal: FC<MessageTemplateModalProps> = ({
         toast.success(message)
         onClose()
         setTemplate('')
+        setFieldQuery('')
         setGenerationResult(null)
       } else {
         const successMessage =
@@ -74,6 +90,7 @@ export const MessageTemplateModal: FC<MessageTemplateModalProps> = ({
     if (!generateMessagesMutation.isPending) {
       onClose()
       setTemplate('')
+      setFieldQuery('')
       setGenerationResult(null)
     }
   }, [generateMessagesMutation.isPending, onClose])
@@ -106,7 +123,20 @@ export const MessageTemplateModal: FC<MessageTemplateModalProps> = ({
     }
   }, [isOpen, handleClose])
 
-  const availableFields = ['firstName', 'lastName', 'email', 'jobTitle', 'companyName', 'countryCode']
+  const isSearching = fieldQuery.trim().length > 0
+  const matchingFields = useMemo(() => searchLeadFields(fieldQuery), [fieldQuery])
+  const visibleGroups = LEAD_FIELD_GROUPS.filter((group) =>
+    matchingFields.some((field) => field.group === group)
+  )
+  // While searching, every group with a hit opens: hiding a match behind a collapsed heading would
+  // make the search look broken. Manual expansion state is preserved for when the query is cleared.
+  const isGroupExpanded = (group: LeadFieldGroup) => isSearching || expandedGroups[group]
+
+  const toggleGroup = (group: LeadFieldGroup) =>
+    setExpandedGroups((groups) => ({ ...groups, [group]: !groups[group] }))
+
+  const preview = useMemo(() => previewTemplate(template, previewLead), [template, previewLead])
+  const previewLeadName = [previewLead?.firstName, previewLead?.lastName].filter(Boolean).join(' ')
 
   const insertField = (field: string) => {
     if (textareaRef.current) {
@@ -156,28 +186,88 @@ export const MessageTemplateModal: FC<MessageTemplateModalProps> = ({
                 Message Template
               </label>
               <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <span className="text-sm text-gray-600">Insert field:</span>
-                  {availableFields.map((field) => (
-                    <button
-                      key={field}
-                      type="button"
-                      onClick={() => insertField(field)}
-                      className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200 transition-colors"
-                    >
-                      {`{${field}}`}
-                    </button>
-                  ))}
+                <div className="border border-gray-200 rounded-md">
+                  <div className="flex items-center gap-2 p-2 border-b border-gray-200">
+                    <span className="text-sm text-gray-600 whitespace-nowrap">Insert field:</span>
+                    <input
+                      type="search"
+                      value={fieldQuery}
+                      onChange={(e) => setFieldQuery(e.target.value)}
+                      placeholder="Search fields..."
+                      aria-label="Search fields"
+                      className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-2 space-y-2">
+                    {visibleGroups.map((group) => (
+                      <div key={group}>
+                        <button
+                          type="button"
+                          onClick={() => toggleGroup(group)}
+                          aria-expanded={isGroupExpanded(group)}
+                          aria-controls={`field-group-${group}`}
+                          className="flex items-center gap-1 w-full text-left text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-700 transition-colors"
+                        >
+                          <span aria-hidden="true">{isGroupExpanded(group) ? '▾' : '▸'}</span>
+                          {group}
+                        </button>
+                        {isGroupExpanded(group) && (
+                          <div id={`field-group-${group}`} className="flex flex-wrap gap-2 mt-1">
+                            {matchingFields
+                              .filter((field) => field.group === group)
+                              .map((field) => (
+                                <button
+                                  key={field.key}
+                                  type="button"
+                                  title={field.label}
+                                  onClick={() => insertField(field.key)}
+                                  className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200 transition-colors"
+                                >
+                                  {`{${field.key}}`}
+                                </button>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {visibleGroups.length === 0 && (
+                      <p className="text-sm text-gray-500">No fields match "{fieldQuery.trim()}"</p>
+                    )}
+                  </div>
                 </div>
                 <textarea
                   ref={textareaRef}
                   id="message-template"
                   value={template}
                   onChange={(e) => setTemplate(e.target.value)}
-                  placeholder="Enter your message template here. Use {fieldName} to insert dynamic values.&#10;&#10;Example: Hi {firstName}, I noticed you work at {companyName} as a {jobTitle}. Would you be interested in..."
+                  placeholder="Enter your message template here. Use {fieldName} to insert dynamic values.&#10;&#10;Example: Hi {firstName}, I noticed you have spent {yearsAtCompany} years at {companyName} as a {jobTitle}. Would you be interested in..."
                   className="w-full h-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
                   required
                 />
+                {template.trim() && (
+                  <div className="border border-gray-200 rounded-md">
+                    <div className="px-3 py-2 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Preview{previewLeadName ? ` — ${previewLeadName}` : ''}
+                    </div>
+                    <p className="px-3 py-2 text-sm text-gray-900 whitespace-pre-wrap">{preview.text}</p>
+                    {(preview.unknownFields.length > 0 || preview.missingFields.length > 0) && (
+                      <div className="px-3 py-2 border-t border-gray-200 space-y-1">
+                        {preview.unknownFields.length > 0 && (
+                          <p className="text-sm text-red-700">
+                            Not a lead field: {preview.unknownFields.map((field) => `{${field}}`).join(', ')}.
+                            No messages will be generated until this is fixed.
+                          </p>
+                        )}
+                        {preview.missingFields.length > 0 && (
+                          <p className="text-sm text-amber-700">
+                            Shown with example values because this lead has no{' '}
+                            {preview.missingFields.join(', ')}. Leads missing these fields will be skipped.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <p className="mt-2 text-sm text-gray-500">
                 Use curly braces around field names (e.g., {`{firstName}`}) to insert dynamic values. If a

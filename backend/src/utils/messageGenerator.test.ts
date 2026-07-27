@@ -6,8 +6,11 @@ describe('generateMessageFromTemplate', () => {
     firstName: 'John',
     lastName: 'Doe',
     email: 'john.doe@example.com',
+    phone: '+1-280-754-0462x2154',
+    linkedinUrl: 'https://www.linkedin.com/in/john-doe',
     jobTitle: 'Software Engineer',
     companyName: 'Tech Corp',
+    yearsAtCompany: 5,
     countryCode: 'US',
   }
 
@@ -15,8 +18,11 @@ describe('generateMessageFromTemplate', () => {
     firstName: 'Jane',
     lastName: null,
     email: 'jane@example.com',
+    phone: null,
+    linkedinUrl: undefined,
     jobTitle: undefined,
     companyName: '',
+    yearsAtCompany: null,
     countryCode: 'CA',
   }
 
@@ -45,10 +51,10 @@ describe('generateMessageFromTemplate', () => {
 
     it('should handle template with all available fields', () => {
       const template =
-        'Name: {firstName} {lastName}, Email: {email}, Job: {jobTitle} at {companyName}, Country: {countryCode}'
+        'Name: {firstName} {lastName}, Email: {email}, Phone: {phone}, LinkedIn: {linkedinUrl}, Job: {jobTitle} at {companyName} for {yearsAtCompany} years, Country: {countryCode}'
       const result = generateMessageFromTemplate(template, fullLead)
       expect(result).toBe(
-        'Name: John Doe, Email: john.doe@example.com, Job: Software Engineer at Tech Corp, Country: US'
+        'Name: John Doe, Email: john.doe@example.com, Phone: +1-280-754-0462x2154, LinkedIn: https://www.linkedin.com/in/john-doe, Job: Software Engineer at Tech Corp for 5 years, Country: US'
       )
     })
 
@@ -101,6 +107,49 @@ describe('generateMessageFromTemplate', () => {
       expect(() => generateMessageFromTemplate(template, minimalLead)).toThrow(
         'Missing required field: lastName'
       )
+    })
+
+    it('should throw error when phone is null', () => {
+      const template = 'Can I call you on {phone}?'
+      expect(() => generateMessageFromTemplate(template, partialLead)).toThrow(
+        'Missing required field: phone'
+      )
+    })
+
+    it('should throw error when linkedinUrl is undefined', () => {
+      const template = 'Found you at {linkedinUrl}'
+      expect(() => generateMessageFromTemplate(template, partialLead)).toThrow(
+        'Missing required field: linkedinUrl'
+      )
+    })
+
+    it('should throw error when yearsAtCompany is null', () => {
+      const template = '{yearsAtCompany} years in the role'
+      expect(() => generateMessageFromTemplate(template, partialLead)).toThrow(
+        'Missing required field: yearsAtCompany'
+      )
+    })
+  })
+
+  describe('numeric and literal-safe field values', () => {
+    it('should interpolate a numeric field value', () => {
+      const template = '{firstName} has been there {yearsAtCompany} years'
+      const result = generateMessageFromTemplate(template, fullLead)
+      expect(result).toBe('John has been there 5 years')
+    })
+
+    it('should treat yearsAtCompany of 0 as present, not missing', () => {
+      const newJoiner: Lead = { firstName: 'Zoe', yearsAtCompany: 0 }
+      const template = '{firstName} just joined ({yearsAtCompany} years)'
+      const result = generateMessageFromTemplate(template, newJoiner)
+      expect(result).toBe('Zoe just joined (0 years)')
+    })
+
+    it('should not interpret $ patterns in field values as replacement patterns', () => {
+      const trickyLead: Lead = { firstName: 'John', companyName: 'A$&B Inc' }
+      const template = 'Hi {firstName} from {companyName}'
+      const result = generateMessageFromTemplate(template, trickyLead)
+      expect(result).toBe('Hi John from A$&B Inc')
     })
   })
 
