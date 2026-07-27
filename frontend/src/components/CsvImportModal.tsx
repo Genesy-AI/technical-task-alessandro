@@ -1,4 +1,4 @@
-import { FC, useState, useRef, useCallback, useMemo, useEffect } from 'react'
+import { FC, ReactNode, useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
@@ -9,6 +9,66 @@ interface CsvImportModalProps {
   isOpen: boolean
   onClose: () => void
 }
+
+interface PreviewColumn {
+  key: string
+  header: string
+  render: (lead: CsvLead) => ReactNode
+}
+
+/**
+ * The preview columns, in display order. Every parsed field is shown so the import can be checked
+ * before it is committed — in particular the normalized values (country code, LinkedIn URL), since
+ * those are the ones a bad CSV silently loses.
+ */
+const PREVIEW_COLUMNS: PreviewColumn[] = [
+  { key: 'row', header: 'Row', render: (lead) => lead.rowIndex - 1 },
+  {
+    key: 'status',
+    header: 'Status',
+    render: (lead) =>
+      lead.isValid ? (
+        <span className="inline-flex px-2 py-1 text-xs font-semibold text-green-800 bg-green-100 rounded-full">
+          Valid
+        </span>
+      ) : (
+        <span className="inline-flex px-2 py-1 text-xs font-semibold text-red-800 bg-red-100 rounded-full">
+          Invalid
+        </span>
+      ),
+  },
+  { key: 'name', header: 'Name', render: (lead) => `${lead.firstName} ${lead.lastName || ''}` },
+  { key: 'email', header: 'Email', render: (lead) => lead.email || '-' },
+  { key: 'phone', header: 'Phone', render: (lead) => lead.phone || '-' },
+  {
+    key: 'linkedinUrl',
+    header: 'LinkedIn',
+    render: (lead) =>
+      lead.linkedinUrl ? (
+        <span className="block max-w-[12rem] truncate" title={lead.linkedinUrl}>
+          {lead.linkedinUrl}
+        </span>
+      ) : (
+        '-'
+      ),
+  },
+  { key: 'jobTitle', header: 'Job Title', render: (lead) => lead.jobTitle || '-' },
+  { key: 'companyName', header: 'Company', render: (lead) => lead.companyName || '-' },
+  // `??` rather than `||`: a lead who just joined has 0 years, which is a real value, not a blank.
+  { key: 'yearsAtCompany', header: 'Years', render: (lead) => lead.yearsAtCompany ?? '-' },
+  { key: 'countryCode', header: 'Country', render: (lead) => lead.countryCode || '-' },
+  {
+    key: 'issues',
+    header: 'Issues',
+    render: (lead) => (
+      <>
+        {lead.errors.length > 0 && <div className="text-red-600">{lead.errors.join(', ')}</div>}
+        {lead.warnings.length > 0 && <div className="text-amber-600">{lead.warnings.join(', ')}</div>}
+        {lead.errors.length === 0 && lead.warnings.length === 0 && <span className="text-gray-500">-</span>}
+      </>
+    ),
+  },
+]
 
 export const CsvImportModal: FC<CsvImportModalProps> = ({ isOpen, onClose }) => {
   const [csvData, setCsvData] = useState<CsvLead[]>([])
@@ -97,9 +157,12 @@ export const CsvImportModal: FC<CsvImportModalProps> = ({ isOpen, onClose }) => 
         firstName: lead.firstName,
         lastName: lead.lastName,
         email: lead.email,
+        phone: lead.phone || undefined,
+        linkedinUrl: lead.linkedinUrl || undefined,
         jobTitle: lead.jobTitle || undefined,
-        countryCode: lead.countryCode || undefined,
         companyName: lead.companyName || undefined,
+        yearsAtCompany: lead.yearsAtCompany,
+        countryCode: lead.countryCode || undefined,
       }))
 
       return api.leads.bulkImport({ leads: leadsToImport })
@@ -237,8 +300,8 @@ export const CsvImportModal: FC<CsvImportModalProps> = ({ isOpen, onClose }) => 
                     </button>
                   </p>
                   <p className="text-sm text-gray-500">
-                    CSV must include: firstName, lastName, email (required). Optional: jobTitle, countryCode,
-                    companyName
+                    CSV must include: firstName, lastName, email (required). Optional: jobTitle, companyName,
+                    countryCode, phoneNumber, yearsInRole, linkedin
                   </p>
                 </div>
               )}
@@ -271,45 +334,24 @@ export const CsvImportModal: FC<CsvImportModalProps> = ({ isOpen, onClose }) => 
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Row</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                        Status
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                        Name
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                        Email
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                        Company
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                        Errors
-                      </th>
+                      {PREVIEW_COLUMNS.map((column) => (
+                        <th
+                          key={column.key}
+                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
+                        >
+                          {column.header}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {csvData.map((lead, index) => (
                       <tr key={index} className={lead.isValid ? 'bg-white' : 'bg-red-50'}>
-                        <td className="px-3 py-2 text-sm text-gray-900">{lead.rowIndex - 1}</td>
-                        <td className="px-3 py-2">
-                          {lead.isValid ? (
-                            <span className="inline-flex px-2 py-1 text-xs font-semibold text-green-800 bg-green-100 rounded-full">
-                              Valid
-                            </span>
-                          ) : (
-                            <span className="inline-flex px-2 py-1 text-xs font-semibold text-red-800 bg-red-100 rounded-full">
-                              Invalid
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-sm text-gray-900">
-                          {lead.firstName} {lead.lastName || ''}
-                        </td>
-                        <td className="px-3 py-2 text-sm text-gray-900">{lead.email || '-'}</td>
-                        <td className="px-3 py-2 text-sm text-gray-900">{lead.companyName || '-'}</td>
-                        <td className="px-3 py-2 text-sm text-red-600">{lead.errors.join(', ') || '-'}</td>
+                        {PREVIEW_COLUMNS.map((column) => (
+                          <td key={column.key} className="px-3 py-2 text-sm text-gray-900">
+                            {column.render(lead)}
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>

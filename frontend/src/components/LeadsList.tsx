@@ -1,9 +1,101 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FC, useState } from 'react'
+import { FC, ReactNode, useState } from 'react'
 import toast from 'react-hot-toast'
 import { api } from '../api'
+import { LeadsGetManyOutput } from '../api/types/leads/getMany'
 import { MessageTemplateModal } from './MessageTemplateModal'
 import { CsvImportModal } from './CsvImportModal'
+import { formatVerificationSummary, hasLeadsToVerify } from '../utils/leadVerification'
+
+type Lead = LeadsGetManyOutput[number]
+
+const formatDate = (dateString: string) => {
+  return new Date(dateString).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+interface LeadColumn {
+  key: string
+  header: string
+  /** Extra classes for the cell wrapper. Defaults to keeping the value on one line. */
+  cellClassName?: string
+  render: (lead: Lead) => ReactNode
+}
+
+/**
+ * The lead columns, in display order. Header and cell used to be two hand-synced blocks of markup,
+ * which meant every new field was two edits that could silently drift apart. Driving both from this
+ * list keeps them in step and makes adding a field a one-line change.
+ */
+const LEAD_COLUMNS: LeadColumn[] = [
+  {
+    key: 'name',
+    header: 'Name',
+    render: (lead) => (
+      <span className="font-medium text-gray-900">
+        {lead.firstName} {lead.lastName || ''}
+      </span>
+    ),
+  },
+  {
+    key: 'email',
+    header: 'Email',
+    render: (lead) => (
+      <>
+        {lead.email || '-'} {lead.emailVerified === null ? '❓' : lead.emailVerified ? '✅' : '❌'}
+      </>
+    ),
+  },
+  {
+    key: 'phone',
+    header: 'Phone',
+    render: (lead) =>
+      lead.phone ? (
+        <a href={`tel:${lead.phone}`} className="text-blue-600 hover:text-blue-700 hover:underline">
+          {lead.phone}
+        </a>
+      ) : (
+        '-'
+      ),
+  },
+  {
+    key: 'linkedinUrl',
+    header: 'LinkedIn',
+    render: (lead) =>
+      lead.linkedinUrl ? (
+        <a
+          href={lead.linkedinUrl}
+          target="_blank"
+          rel="noreferrer"
+          title={lead.linkedinUrl}
+          className="block max-w-[16rem] truncate text-blue-600 hover:text-blue-700 hover:underline"
+        >
+          {lead.linkedinUrl}
+        </a>
+      ) : (
+        '-'
+      ),
+  },
+  { key: 'jobTitle', header: 'Job Title', render: (lead) => lead.jobTitle || '-' },
+  { key: 'companyName', header: 'Company', render: (lead) => lead.companyName || '-' },
+  // `??` rather than `||`: a lead who just joined has 0 years, which is a real value, not a blank.
+  { key: 'yearsAtCompany', header: 'Years', render: (lead) => lead.yearsAtCompany ?? '-' },
+  { key: 'countryCode', header: 'Country', render: (lead) => lead.countryCode || '-' },
+  {
+    key: 'message',
+    header: 'Message',
+    cellClassName: 'max-w-xs truncate',
+    render: (lead) => <span title={lead.message || ''}>{lead.message || '-'}</span>,
+  },
+  {
+    key: 'createdAt',
+    header: 'Created',
+    render: (lead) => <span className="text-gray-500">{formatDate(lead.createdAt)}</span>,
+  },
+]
 
 export const LeadsList: FC = () => {
   const [selectedLeads, setSelectedLeads] = useState<number[]>([])
@@ -40,11 +132,7 @@ export const LeadsList: FC = () => {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['leads', 'getMany'] })
       setIsEnrichDropdownOpen(false)
-      toast.success(
-        data.verifiedCount === 1
-          ? `Verified ${data.verifiedCount} email`
-          : `Verified ${data.verifiedCount} emails`
-      )
+      toast.success(formatVerificationSummary(data))
     },
     onError: () => {
       toast.error('Failed to verify emails. Please try again.')
@@ -73,14 +161,6 @@ export const LeadsList: FC = () => {
     }
   }
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    })
-  }
-
   if (leads.isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -92,6 +172,7 @@ export const LeadsList: FC = () => {
 
   const isAllSelected = leads.data && selectedLeads.length === leads.data.length
   const isIndeterminate = selectedLeads.length > 0 && selectedLeads.length < (leads.data?.length || 0)
+  const canVerifyEmails = hasLeadsToVerify(leads.data || [], selectedLeads)
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-12rem)]">
@@ -149,13 +230,15 @@ export const LeadsList: FC = () => {
                     </button>
                     <button
                       onClick={() => verifyEmailsMutation.mutate(selectedLeads)}
-                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                      disabled={!canVerifyEmails || verifyEmailsMutation.isPending}
+                      title={canVerifyEmails ? undefined : 'All selected emails are already verified'}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
                     >
                       <div className="flex items-center">
                         <svg className="mr-3 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 12H8m8 0a8 8 0 11-16 0 8 8 0 0116 0zm-8 0V4" />
                         </svg>
-                        Verify Email
+                        {verifyEmailsMutation.isPending ? 'Verifying...' : 'Verify Email'}
                       </div>
                     </button>
                     <button
@@ -219,27 +302,15 @@ export const LeadsList: FC = () => {
                     onChange={(e) => handleSelectAll(e.target.checked)}
                   />
                 </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Name
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Email
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Job Title
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Company
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Country
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Message
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Created
-                </th>
+                {LEAD_COLUMNS.map((column) => (
+                  <th
+                    key={column.key}
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50 whitespace-nowrap"
+                  >
+                    {column.header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -258,31 +329,13 @@ export const LeadsList: FC = () => {
                       onChange={(e) => handleSelectLead(lead.id, e.target.checked)}
                     />
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">
-                      {lead.firstName} {lead.lastName || ''}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-gray-900">{lead.email || '-'} {lead.emailVerified === null ? '❓' : lead.emailVerified ? '✅' : '❌'}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-gray-900">{lead.jobTitle || '-'}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-gray-900">{lead.companyName || '-'}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-gray-900">{lead.countryCode || '-'}</div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="text-sm text-gray-900 max-w-xs truncate" title={lead.message || ''}>
-                      {lead.message || '-'}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatDate(lead.createdAt)}
-                  </td>
+                  {LEAD_COLUMNS.map((column) => (
+                    <td key={column.key} className="px-6 py-4">
+                      <div className={`text-sm text-gray-900 ${column.cellClassName ?? 'whitespace-nowrap'}`}>
+                        {column.render(lead)}
+                      </div>
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>
@@ -323,6 +376,7 @@ export const LeadsList: FC = () => {
         onClose={() => setIsMessageModalOpen(false)}
         selectedLeadIds={selectedLeads}
         selectedLeadsCount={selectedLeads.length}
+        previewLead={leads.data?.find((lead) => lead.id === selectedLeads[0])}
       />
 
       <CsvImportModal

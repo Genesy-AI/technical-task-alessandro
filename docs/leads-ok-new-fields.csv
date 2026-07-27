@@ -1,0 +1,4 @@
+firstName,lastName,email,jobTitle,countryCode,companyName,yearsInRole,phoneNumber,linkedin
+Ada,Lovelace,ada.lovelace@example.com,CTO,GB,Analytical Engines Ltd,7,+44-20-7946-0100,https://www.linkedin.com/in/ada-lovelace
+Grace,Hopper,grace.hopper@example.com,Rear Admiral,US,Compiler Works,12,(731)123-9702,www.linkedin.com/in/grace-hopper
+Katherine,Johnson,katherine.johnson@example.com,Research Mathematician,US,Orbital Mechanics Inc.,0,001-464-312-8555,katherine-johnson
