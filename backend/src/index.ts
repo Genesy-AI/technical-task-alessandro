@@ -1,8 +1,9 @@
 import { PrismaClient } from '@prisma/client'
 import express, { Request, Response } from 'express'
 import { Connection, Client } from '@temporalio/client'
-import { verifyEmailWorkflow } from './workflows'
+import { VERIFY_EMAIL_WORKFLOW_EXECUTION_TIMEOUT_MS, verifyEmailWorkflow } from './workflows'
 import { generateMessageFromTemplate } from './utils/messageGenerator'
+import { partitionLeadsByVerification } from './utils/leadVerification'
 import { runTemporalWorker } from './worker'
 const prisma = new PrismaClient()
 const app = express()
@@ -21,8 +22,19 @@ app.use(function (req, res, next) {
   next()
 })
 
+// Optional lead fields arrive from untrusted clients, so they cannot be assumed to be strings:
+// calling .trim() directly on a number or object would throw mid-import.
+const optionalString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null
+
+const optionalInt = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim())
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
 app.post('/leads', async (req: Request, res: Response) => {
-  const { name, lastName, email } = req.body
+  const { name, lastName, email, phone, yearsAtCompany, linkedinUrl } = req.body
 
   if (!name || !lastName || !email) {
     return res.status(400).json({ error: 'firstName, lastName, and email are required' })
@@ -33,6 +45,9 @@ app.post('/leads', async (req: Request, res: Response) => {
       firstName: String(name),
       lastName: String(lastName),
       email: String(email),
+      phone: optionalString(phone),
+      yearsAtCompany: optionalInt(yearsAtCompany),
+      linkedinUrl: optionalString(linkedinUrl),
     },
   })
   res.json(lead)
@@ -226,9 +241,12 @@ app.post('/leads/bulk', async (req: Request, res: Response) => {
             firstName: lead.firstName.trim(),
             lastName: lead.lastName.trim(),
             email: lead.email.trim(),
-            jobTitle: lead.jobTitle ? lead.jobTitle.trim() : null,
-            countryCode: lead.countryCode ? lead.countryCode.trim() : null,
-            companyName: lead.companyName ? lead.companyName.trim() : null,
+            jobTitle: optionalString(lead.jobTitle),
+            countryCode: optionalString(lead.countryCode),
+            companyName: optionalString(lead.companyName),
+            phone: optionalString(lead.phone),
+            yearsAtCompany: optionalInt(lead.yearsAtCompany),
+            linkedinUrl: optionalString(lead.linkedinUrl),
           },
         })
         importedCount++
@@ -273,40 +291,74 @@ app.post('/leads/verify-emails', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'No leads found with the provided IDs' })
     }
 
-    const connection = await Connection.connect({ address: 'localhost:7233' })
-    const client = new Client({ connection, namespace: 'default' })
+    // Verification is expensive, so leads with a confirmed address are reported
+    // back as skipped rather than re-run. Previously rejected ones stay
+    // eligible, since a rejection can be a transient provider answer.
+    const { eligible, alreadyVerified } = partitionLeadsByVerification(leads)
+
+    const skipped = alreadyVerified.map((lead) => ({
+      leadId: lead.id,
+      emailVerified: lead.emailVerified,
+    }))
 
     let verifiedCount = 0
     const results: Array<{ leadId: number; emailVerified: boolean }> = []
     const errors: Array<{ leadId: number; leadName: string; error: string }> = []
 
-    for (const lead of leads) {
-      try {
-        const isVerified = await client.workflow.execute(verifyEmailWorkflow, {
-          taskQueue: 'myQueue',
-          workflowId: `verify-email-${lead.id}-${Date.now()}`,
-          args: [lead.email],
-        })
-
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { emailVerified: Boolean(isVerified) },
-        })
-
-        results.push({ leadId: lead.id, emailVerified: isVerified })
-        verifiedCount += 1
-      } catch (error) {
-        errors.push({
-          leadId: lead.id,
-          leadName: `${lead.firstName} ${lead.lastName}`.trim(),
-          error: error instanceof Error ? error.message : 'Unknown error',
-        })
-      }
+    // Nothing to do: answer without paying for a Temporal connection.
+    if (eligible.length === 0) {
+      return res.json({
+        success: true,
+        verifiedCount,
+        skippedCount: skipped.length,
+        results,
+        skipped,
+        errors,
+      })
     }
 
-    await connection.close()
+    const connection = await Connection.connect({ address: 'localhost:7233' })
+    const client = new Client({ connection, namespace: 'default' })
 
-    res.json({ success: true, verifiedCount, results, errors })
+    try {
+      for (const lead of eligible) {
+        try {
+          const isVerified = await client.workflow.execute(verifyEmailWorkflow, {
+            taskQueue: 'myQueue',
+            workflowId: `verify-email-${lead.id}-${Date.now()}`,
+            args: [lead.email],
+            // Hard backstop: whatever happens inside the workflow, this request
+            // always gets an outcome instead of waiting forever.
+            workflowExecutionTimeout: VERIFY_EMAIL_WORKFLOW_EXECUTION_TIMEOUT_MS,
+          })
+
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: { emailVerified: Boolean(isVerified) },
+          })
+
+          results.push({ leadId: lead.id, emailVerified: isVerified })
+          verifiedCount += 1
+        } catch (error) {
+          errors.push({
+            leadId: lead.id,
+            leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+            error: error instanceof Error ? error.message : 'Unknown error',
+          })
+        }
+      }
+    } finally {
+      await connection.close()
+    }
+
+    res.json({
+      success: true,
+      verifiedCount,
+      skippedCount: skipped.length,
+      results,
+      skipped,
+      errors,
+    })
   } catch (error) {
     console.error('Error verifying emails:', error)
     res.status(500).json({ error: 'Failed to verify emails' })
